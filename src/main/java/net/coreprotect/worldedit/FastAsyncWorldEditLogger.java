@@ -12,7 +12,6 @@ import com.fastasyncworldedit.core.queue.IChunkSet;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.extension.platform.Actor;
 import com.sk89q.worldedit.extent.Extent;
-import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.world.World;
 import com.sk89q.worldedit.world.block.BaseBlock;
 import com.sk89q.worldedit.world.block.BlockState;
@@ -25,13 +24,11 @@ final class FastAsyncWorldEditLogger implements IBatchProcessor {
     private static final ProcessorScope SCOPE = resolveScope();
     private final Actor actor;
     private final World eventWorld;
-    private final Extent extent;
     private final org.bukkit.World world;
 
     FastAsyncWorldEditLogger(Actor actor, World world, Extent extent) {
         this.actor = actor;
         this.eventWorld = world;
-        this.extent = extent;
         this.world = BukkitAdapter.adapt(world);
     }
 
@@ -72,15 +69,12 @@ final class FastAsyncWorldEditLogger implements IBatchProcessor {
                 int x = index & 15;
                 int y = (layer << 4) + (index >> 8);
                 int z = (index >> 4) & 15;
-                BlockState oldBlock = BlockState.getFromOrdinal(oldOrdinal);
-                BlockState newBlock = BlockState.getFromOrdinal(newOrdinal);
-                Material oldType = BukkitAdapter.adapt(oldBlock.getBlockType());
-                BlockData oldBlockData = BukkitAdapter.adapt(oldBlock);
-                BlockVector3 position = BlockVector3.at(chunkX + x, y, chunkZ + z);
+                Material oldType = material(oldOrdinal);
+                BlockData oldBlockData = blockData(oldOrdinal);
                 Location location = new Location(world, chunkX + x, y, chunkZ + z);
                 BaseBlock baseBlock = WorldEditLogger.needsBaseBlock(oldType, config) ? get.getFullBlock(x, y, z) : null;
                 org.bukkit.block.BlockState lowerHalf = WorldEditLogger.isLoggedTopHalf(oldType, oldBlockData) ? getLowerHalf(get, set, x, y, z, chunkX + x, chunkZ + z, oldBlockData) : null;
-                WorldEditLogger.postProcess(extent, actor, position, location, newBlock, baseBlock, oldType, oldBlockData, null, false, lowerHalf);
+                WorldEditLogger.postProcess(actor, location, baseBlock, oldType, oldBlockData, dataString(oldOrdinal), material(newOrdinal), blockData(newOrdinal), dataString(newOrdinal), null, false, lowerHalf);
             }
         }
         return set;
@@ -108,12 +102,53 @@ final class FastAsyncWorldEditLogger implements IBatchProcessor {
             return null;
         }
 
-        BlockData blockData = BukkitAdapter.adapt(BlockState.getFromOrdinal(ordinal));
-        if (!WorldEditLogger.isOtherHalf(topHalf, blockData)) {
+        if (!WorldEditLogger.isOtherHalf(topHalf, template(ordinal))) {
             return null;
         }
 
-        return new WorldEditBlockState(new Location(world, worldX, lowerY, worldZ), blockData.getMaterial(), blockData);
+        return new WorldEditBlockState(new Location(world, worldX, lowerY, worldZ), material(ordinal), blockData(ordinal));
+    }
+
+    /*
+     * Conversions cached per FAWE block state ordinal: every changed block otherwise converts both states to Bukkit
+     * BlockData and builds both data strings. The block registry is fixed once the server is running and concurrent
+     * writers store equal values, so filling the arrays without locks is safe. Material and String are immutable;
+     * BlockData is mutable (postProcess may modify it), so callers get a clone and the cached instance never leaves.
+     */
+    private static final int STATE_COUNT = BlockTypesCache.states.length;
+    private static final Material[] MATERIALS = new Material[STATE_COUNT];
+    private static final BlockData[] BLOCK_DATA = new BlockData[STATE_COUNT];
+    private static final String[] DATA_STRINGS = new String[STATE_COUNT];
+
+    private static BlockData template(int ordinal) {
+        BlockData blockData = BLOCK_DATA[ordinal];
+        if (blockData == null) {
+            blockData = BukkitAdapter.adapt(BlockState.getFromOrdinal(ordinal));
+            BLOCK_DATA[ordinal] = blockData;
+        }
+        return blockData;
+    }
+
+    private static BlockData blockData(int ordinal) {
+        return template(ordinal).clone();
+    }
+
+    private static Material material(int ordinal) {
+        Material material = MATERIALS[ordinal];
+        if (material == null) {
+            material = BukkitAdapter.adapt(BlockState.getFromOrdinal(ordinal).getBlockType());
+            MATERIALS[ordinal] = material;
+        }
+        return material;
+    }
+
+    private static String dataString(int ordinal) {
+        String dataString = DATA_STRINGS[ordinal];
+        if (dataString == null) {
+            dataString = template(ordinal).getAsString();
+            DATA_STRINGS[ordinal] = dataString;
+        }
+        return dataString;
     }
 
     @Override
