@@ -1,5 +1,7 @@
 package net.coreprotect.worldedit;
 
+import java.util.concurrent.atomic.AtomicReferenceArray;
+
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.data.BlockData;
@@ -111,20 +113,23 @@ final class FastAsyncWorldEditLogger implements IBatchProcessor {
 
     /*
      * Conversions cached per FAWE block state ordinal: every changed block otherwise converts both states to Bukkit
-     * BlockData and builds both data strings. The block registry is fixed once the server is running and concurrent
-     * writers store equal values, so filling the arrays without locks is safe. Material and String are immutable;
-     * BlockData is mutable (postProcess may modify it), so callers get a clone and the cached instance never leaves.
+     * BlockData and builds both data strings. The block registry is fixed once the server is running, so concurrent
+     * writers store equal values and a lost race only repeats the work. Material (an enum) and String (final fields)
+     * are safely published through plain arrays. BlockData has non-final fields, so it is published through an
+     * AtomicReferenceArray: FAWE processes chunks on several threads, and without that a thread could see a template
+     * before its fields are initialized. BlockData is also mutable (postProcess may modify it), so callers get a clone
+     * and the cached instance never leaves.
      */
     private static final int STATE_COUNT = BlockTypesCache.states.length;
     private static final Material[] MATERIALS = new Material[STATE_COUNT];
-    private static final BlockData[] BLOCK_DATA = new BlockData[STATE_COUNT];
+    private static final AtomicReferenceArray<BlockData> BLOCK_DATA = new AtomicReferenceArray<>(STATE_COUNT);
     private static final String[] DATA_STRINGS = new String[STATE_COUNT];
 
     private static BlockData template(int ordinal) {
-        BlockData blockData = BLOCK_DATA[ordinal];
+        BlockData blockData = BLOCK_DATA.get(ordinal);
         if (blockData == null) {
             blockData = BukkitAdapter.adapt(BlockState.getFromOrdinal(ordinal));
-            BLOCK_DATA[ordinal] = blockData;
+            BLOCK_DATA.set(ordinal, blockData);
         }
         return blockData;
     }
